@@ -1,0 +1,384 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-layout">
+  <div class="main-col">
+    <div class="brand">
+      <div class="brand-icon" aria-hidden="true">▶</div>
+      <div>
+        <h1>Video audio split</h1>
+        <p>15 minutes · YouTube · умная нарезка</p>
+      </div>
+    </div>
+
+    <div class="card">
+      {% if err %}
+      <div class="err">{{ err }}</div>
+      {% endif %}
+
+      <form id="main-form" enctype="multipart/form-data" action="#" method="post" onsubmit="return false;">
+        <input type="radio" name="source_tab" id="tab-file" value="file" checked hidden/>
+        <input type="radio" name="source_tab" id="tab-folder" value="folder" hidden/>
+        <input type="radio" name="source_tab" id="tab-yt" value="youtube" hidden/>
+
+        <div class="tabs">
+          <label for="tab-file">Файл</label>
+          <label for="tab-folder">Папка</label>
+          <label for="tab-yt">YouTube</label>
+        </div>
+
+        <div class="panes">
+          <div class="pane pane-file">
+            <div class="field">
+              <span class="label">Один видеофайл</span>
+              <input type="file" name="video" id="inp-video" accept="video/*,.mp4,.mkv,.mov,.webm,.avi"/>
+            </div>
+          </div>
+          <div class="pane pane-folder">
+            <div class="field">
+              <span class="label">Выбор папки с видео</span>
+              <div class="path-picker">
+                <input type="text" id="inp-folder-path" autocomplete="off" value="{{ default_result_folder }}" readonly/>
+                <button type="button" class="mini-btn" id="pick-video-folder">Выбрать</button>
+              </div>
+              <input type="hidden" name="video_path_server" id="inp-video-path-server"/>
+              <select id="folder-video-select" class="folder-select hidden" aria-label="Видео из папки"></select>
+            </div>
+          </div>
+          <div class="pane pane-yt">
+            <div class="field">
+              <span class="label">URL ролика</span>
+              <input type="url" name="youtube_url" id="inp-yt" placeholder="https://www.youtube.com/watch?v=…"/>
+              <p class="hint">Скачивание: <code>bv*+ba/b</code>, слияние в MP4 при возможности.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <span class="label">Макс. длина одной части</span>
+          <input type="text" name="max_duration" value="14:30" placeholder="14:30"/>
+          <p class="hint"><code>M:SS</code>, <code>H:MM:SS</code> или секунды.</p>
+        </div>
+
+        <div class="field">
+          <span class="label">Папка для готовых файлов</span>
+          <div class="path-picker">
+            <input type="text" name="result_folder" id="inp-result-folder" autocomplete="off" value="{{ default_result_folder }}"/>
+            <button type="button" class="mini-btn" id="pick-result-folder">Выбрать</button>
+          </div>
+        </div>
+
+        <input type="hidden" name="audio_mode" value="copy"/>
+
+        <button type="button" class="btn" id="run-btn">Нарезать</button>
+      </form>
+    </div>
+  </div>
+
+  <aside class="log-aside">
+    <div class="log-card">
+      <h2>Журнал операций</h2>
+      <div class="prog-section" id="prog-section">
+        <div class="prog-track" id="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
+        <div class="prog-eta" id="prog-eta">—</div>
+      </div>
+      <pre id="op-log">Ожидание запуска…</pre>
+      <div class="log-status" id="op-status"></div>
+    </div>
+  </aside>
+</div>
+
+<script>
+(function () {
+  var tabFile = document.getElementById('tab-file');
+  var tabFolder = document.getElementById('tab-folder');
+  var tabYt = document.getElementById('tab-yt');
+  var inpVideo = document.getElementById('inp-video');
+  var inpFolderPath = document.getElementById('inp-folder-path');
+  var pickVideoFolder = document.getElementById('pick-video-folder');
+  var inpVideoPathServer = document.getElementById('inp-video-path-server');
+  var folderSelect = document.getElementById('folder-video-select');
+  var inpYt = document.getElementById('inp-yt');
+  var inpResultFolder = document.getElementById('inp-result-folder');
+  var pickResultFolder = document.getElementById('pick-result-folder');
+  var form = document.getElementById('main-form');
+  var runBtn = document.getElementById('run-btn');
+  var opLog = document.getElementById('op-log');
+  var opStatus = document.getElementById('op-status');
+  var progTrack = document.getElementById('prog-track');
+  var progFill = document.getElementById('prog-fill');
+  var progEta = document.getElementById('prog-eta');
+  var folderFileMap = {};
+  var folderChosenFile = null;
+
+  function clearFolderPick() {
+    folderFileMap = {};
+    folderChosenFile = null;
+    if (inpVideoPathServer) inpVideoPathServer.value = '';
+    if (folderSelect) {
+      folderSelect.innerHTML = '';
+      folderSelect.classList.add('hidden');
+    }
+  }
+
+  tabFile.addEventListener('change', function () {
+    if (tabFile.checked) {
+      inpYt.value = '';
+      clearFolderPick();
+    }
+  });
+  tabFolder.addEventListener('change', function () {
+    if (tabFolder.checked) {
+      inpYt.value = '';
+      inpVideo.value = '';
+      loadVideoFolder(false);
+    }
+  });
+  tabYt.addEventListener('change', function () {
+    if (tabYt.checked) {
+      inpVideo.value = '';
+      clearFolderPick();
+    }
+  });
+
+  function fillVideoFolder(data, alertOnEmpty) {
+    if (!data || !data.path) return;
+    inpFolderPath.value = data.path;
+    folderFileMap = {};
+    folderSelect.innerHTML = '';
+    var list = data.files || [];
+    if (!list.length) {
+      folderSelect.classList.add('hidden');
+      folderChosenFile = null;
+      inpVideoPathServer.value = '';
+      if (alertOnEmpty) alert('В папке не найдено видеофайлов (mp4, mkv, mov, webm, avi…).');
+      return;
+    }
+    list.forEach(function (f) {
+      folderFileMap[f.path] = f.path;
+      var opt = document.createElement('option');
+      opt.value = f.path;
+      opt.textContent = f.name;
+      folderSelect.appendChild(opt);
+    });
+    folderSelect.classList.remove('hidden');
+    folderSelect.value = list[0].path;
+    folderChosenFile = list[0].path;
+    inpVideoPathServer.value = folderChosenFile;
+  }
+
+  async function loadVideoFolder(alertOnEmpty) {
+    if (!inpFolderPath || !folderSelect || !inpVideoPathServer) return;
+    try {
+      var fd = new FormData();
+      fd.append('folder', inpFolderPath.value || '');
+      var res = await fetch({{ url_for('list_video_folder') | tojson }}, { method: 'POST', body: fd });
+      var data = await res.json();
+      if (!res.ok || !data.ok) {
+        if (alertOnEmpty) alert(data.error || 'Не удалось прочитать папку.');
+        return;
+      }
+      fillVideoFolder(data, alertOnEmpty);
+    } catch (e) {
+      if (alertOnEmpty) alert('Не удалось прочитать папку: ' + e);
+    }
+  }
+
+  if (pickVideoFolder && inpFolderPath && folderSelect && inpVideoPathServer) {
+    pickVideoFolder.addEventListener('click', async function () {
+      pickVideoFolder.disabled = true;
+      try {
+        var fd = new FormData();
+        fd.append('current', inpFolderPath.value || '');
+        var res = await fetch({{ url_for('pick_video_folder') | tojson }}, { method: 'POST', body: fd });
+        var data = await res.json();
+        if (!res.ok || !data.ok) {
+          alert(data.error || 'Не удалось выбрать папку.');
+          return;
+        }
+        if (!data.path) return;
+        fillVideoFolder(data, true);
+      } catch (e) {
+        alert('Не удалось выбрать папку: ' + e);
+      } finally {
+        pickVideoFolder.disabled = false;
+      }
+    });
+  }
+  if (folderSelect) {
+    folderSelect.addEventListener('change', function () {
+      folderChosenFile = folderFileMap[folderSelect.value] || null;
+      if (inpVideoPathServer) inpVideoPathServer.value = folderChosenFile || '';
+    });
+  }
+  if (tabFolder.checked) loadVideoFolder(false);
+
+  if (pickResultFolder && inpResultFolder) {
+    pickResultFolder.addEventListener('click', async function () {
+      pickResultFolder.disabled = true;
+      try {
+        var fd = new FormData();
+        fd.append('current', inpResultFolder.value || '');
+        var res = await fetch({{ url_for('pick_result_folder') | tojson }}, { method: 'POST', body: fd });
+        var data = await res.json();
+        if (!res.ok || !data.ok) {
+          alert(data.error || 'Не удалось выбрать папку.');
+          return;
+        }
+        if (data.path) inpResultFolder.value = data.path;
+      } catch (e) {
+        alert('Не удалось выбрать папку: ' + e);
+      } finally {
+        pickResultFolder.disabled = false;
+      }
+    });
+  }
+
+  function validateBeforeRun() {
+    var yt = (inpYt.value || '').trim();
+    if (tabYt.checked) {
+      if (!yt) { alert('Вставьте ссылку на YouTube.'); return false; }
+      return true;
+    }
+    if (tabFolder.checked) {
+      if (!folderChosenFile) { alert('Выберите папку с видео и файл в списке.'); return false; }
+      return true;
+    }
+    if (!inpVideo.files || !inpVideo.files.length) {
+      alert('Выберите видеофайл или другую вкладку.');
+      return false;
+    }
+    return true;
+  }
+
+  function buildFormData() {
+    var fd = new FormData(form);
+    if (tabYt.checked) {
+      fd.delete('video');
+    } else {
+      fd.delete('youtube_url');
+    }
+    if (tabFolder.checked && folderChosenFile) {
+      fd.delete('video');
+      fd.set('video_path_server', folderChosenFile);
+    }
+    return fd;
+  }
+
+  function setLog(text) {
+    opLog.textContent = text;
+    opLog.scrollTop = opLog.scrollHeight;
+  }
+  function appendStatus(t) {
+    opStatus.textContent = t;
+  }
+
+  function fmtEta(sec) {
+    if (sec == null || sec === '' || isNaN(sec)) return '…';
+    if (sec < 0) return '…';
+    if (sec < 90) return Math.round(sec) + ' с';
+    var m = Math.floor(sec / 60);
+    var s = Math.round(sec % 60);
+    if (m < 90) return m + ' мин ' + s + ' с';
+    var h = Math.floor(m / 60);
+    m = m % 60;
+    return h + ' ч ' + m + ' мин';
+  }
+
+  function renderProgress(pr) {
+    if (!progTrack || !progFill || !progEta) return;
+    if (!pr || typeof pr !== 'object') {
+      progTrack.classList.add('indeterminate');
+      progFill.style.width = '35%';
+      progEta.textContent = 'Ожидание…';
+      return;
+    }
+    var mode = pr.mode || 'determinate';
+    var pct = typeof pr.pct === 'number' ? pr.pct : parseFloat(pr.pct) || 0;
+    var eta = pr.eta_sec;
+    var tot = pr.elapsed_total_sec;
+    var label = pr.label || '';
+    if (mode === 'indeterminate' || pr.phase === 'youtube') {
+      progTrack.classList.add('indeterminate');
+      progFill.style.width = '38%';
+      var yt = (pr.phase === 'youtube') ? 'Скачивание YouTube — время непредсказуемо. ' : '';
+      progEta.textContent = yt + 'Прошло ' + (tot != null ? tot + ' с' : '…') + (label ? ' · ' + label : '');
+      return;
+    }
+    progTrack.classList.remove('indeterminate');
+    var w = Math.max(0, Math.min(100, pct));
+    progFill.style.width = w + '%';
+    var etaStr = (eta != null && eta <= 0 && pct >= 99) ? 'завершение' : fmtEta(eta);
+    progEta.textContent =
+      Math.round(pct) + '% · прошло ' + (tot != null ? tot + ' с' : '…') +
+      ' · осталось ~' + etaStr + (label ? ' · ' + label : '');
+  }
+
+  runBtn.addEventListener('click', async function () {
+    if (!validateBeforeRun()) return;
+    runBtn.disabled = true;
+    setLog('Отправка на сервер…');
+    appendStatus('');
+    renderProgress({ mode: 'indeterminate', phase: 'queued', pct: 0, label: 'Отправка…' });
+    try {
+      var fd = buildFormData();
+      var res = await fetch({{ url_for('api_start') | tojson }}, { method: 'POST', body: fd });
+      var raw = await res.text();
+      var data;
+      try {
+        data = JSON.parse(raw);
+      } catch (e) {
+        setLog('Ответ сервера (не JSON): ' + raw.slice(0, 800));
+        runBtn.disabled = false;
+        return;
+      }
+      if (!res.ok || !data.ok) {
+        setLog('Ошибка: ' + (data.error || res.statusText || raw.slice(0, 400)));
+        runBtn.disabled = false;
+        return;
+      }
+      var jid = data.job_id;
+      appendStatus('Задание ' + jid + ' — выполняется…');
+      setLog('Задание ' + jid + '\n');
+      var pollErrors = 0;
+      var MAX_POLL_ERRORS = 5;
+      var timer = setInterval(async function () {
+        try {
+          var st = await fetch({{ url_for('api_status', job_id='___') | tojson }}.replace('___', jid));
+          var j = JSON.parse(await st.text());
+          pollErrors = 0;
+          if (j.logs && j.logs.length) setLog(j.logs.join('\n'));
+          renderProgress(j.progress);
+          if (j.status === 'done') {
+            clearInterval(timer);
+            appendStatus('Готово.');
+            window.location.href = {{ url_for('job_done', job_id='___') | tojson }}.replace('___', jid);
+          } else if (j.status === 'error') {
+            clearInterval(timer);
+            appendStatus('Ошибка.');
+            renderProgress({
+              mode: 'determinate',
+              pct: (j.progress && typeof j.progress.pct === 'number') ? j.progress.pct : 0,
+              eta_sec: null,
+              label: j.error || 'Ошибка',
+              elapsed_total_sec: j.progress && j.progress.elapsed_total_sec
+            });
+            setLog((j.logs || []).join('\n') + '\n\n---\n' + (j.error || 'Неизвестная ошибка'));
+            runBtn.disabled = false;
+          }
+        } catch (e) {
+          pollErrors++;
+          if (pollErrors >= MAX_POLL_ERRORS) {
+            clearInterval(timer);
+            setLog('Сбой опроса статуса (' + MAX_POLL_ERRORS + ' попыток): ' + e + '\nЗадание может ещё выполняться — обновите страницу.');
+            runBtn.disabled = false;
+          }
+        }
+      }, 650);
+    } catch (e) {
+      setLog('Ошибка сети: ' + e);
+      runBtn.disabled = false;
+    }
+  });
+})();
+</script>
+{% endblock %}

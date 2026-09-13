@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Готово — Video audio split{% endblock %}
+{% block body %}
+<div class="brand">
+  <div class="brand-icon" aria-hidden="true">✓</div>
+  <div>
+    <h1>Готово</h1>
+    <p>Задание <code>{{ job_id }}</code></p>
+  </div>
+</div>
+
+<div class="card">
+  {% if copy_dest %}
+  <p class="lead" style="margin:0 0 0.75rem">
+    Копия сохранена в: <code>{{ copy_dest }}</code>
+  </p>
+  {% endif %}
+  <p class="lead" style="margin:0">Скачать из браузера или открыть файлы в папке задания / копии:</p>
+  <ul class="result-links">
+    {% for n in files %}
+    <li><a href="{{ url_for('download', job_id=job_id, name=n) }}">{{ n }}</a></li>
+    {% endfor %}
+  </ul>
+  <a class="back" href="{{ url_for('index') }}">← Новая нарезка</a>
+</div>
+{% endblock %}
